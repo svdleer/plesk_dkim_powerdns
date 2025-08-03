@@ -1,22 +1,37 @@
 # Plesk DKIM PowerDNS Automation
 
-This project provides Python scripts to automate DKIM (DomainKeys Identified Mail) enablement in Plesk and DNS record management in PowerDNS using their respective REST APIs.
+This project provides Python scripts to automate DKIM (DomainKeys Identified Mail) enablement in Plesk and DNS record management in PowerDNS using their respective REST APIs and SSH access.
 
 ## Features
 
-- ✅ Enable/disable DKIM for domains in Plesk
+- ✅ Enable/disable DKIM for domains in Plesk (API + SSH)
 - ✅ Automatically create/update DKIM DNS records in PowerDNS
+- ✅ **NEW**: SSH-based DKIM key extraction with sudo support
+- ✅ **NEW**: Multiple fallback methods for reliable key retrieval  
+- ✅ **NEW**: Comprehensive status checking across all systems
 - ✅ Verify DKIM configuration consistency
 - ✅ List DKIM status for all domains
 - ✅ Command-line interface for easy automation
 - ✅ Environment-based configuration
 
+## New SSH Features
+
+🆕 **Enhanced Access**: Direct SSH access to Plesk servers  
+🆕 **Sudo Support**: Execute privileged commands for file system access  
+🆕 **Key Extraction**: Multiple methods to retrieve DKIM keys  
+🆝 **Fallback Logic**: Tries API first, falls back to SSH  
+🆕 **Comprehensive Testing**: Test all connection methods  
+
+## Quick Start
+
+**For enhanced SSH functionality, see: [SSH_QUICKSTART.md](SSH_QUICKSTART.md)**
+
 ## Prerequisites
 
 - Python 3.7+
-- Plesk server with REST API access
-- PowerDNS server with REST API enabled
-- Valid API keys for both services
+- Plesk server with REST API access OR SSH access
+- PowerDNS server with REST API enabled (optional)
+- Valid credentials for your chosen access method
 
 ## Installation
 

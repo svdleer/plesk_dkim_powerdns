@@ -1,63 +1,187 @@
 #!/usr/bin/env python3
 """
 PowerDNS API Management Script
-Handles DNS record operations via PowerDNS REST API
+Handles DNS record operations via PowerDNS REST API through SSH
 """
 
 import os
 import json
 import requests
-from typing import Dict, Optional, List
+import subprocess
+from typing import Dict, Optional, List, Tuple
 from urllib.parse import urljoin
 
 
 class PowerDNSManager:
-    """Manager for PowerDNS operations via REST API"""
+    """Manager for PowerDNS operations via REST API through SSH"""
     
-    def __init__(self, server_url: str, api_key: str):
+    def __init__(self, server_url: str, api_key: str, ssh_hostname: str = None, ssh_username: str = 'admin', ssh_key_path: str = None):
         """
         Initialize PowerDNS Manager
         
         Args:
-            server_url: PowerDNS API server URL (e.g., http://powerdns.example.com:8081)
+            server_url: PowerDNS API server URL (e.g., http://localhost:8081 - will be accessed via SSH)
             api_key: PowerDNS API key
+            ssh_hostname: SSH hostname to connect to for API access
+            ssh_username: SSH username (default: admin)
+            ssh_key_path: Path to SSH private key (optional)
         """
         self.server_url = server_url.rstrip('/')
         self.api_key = api_key
-        self.session = requests.Session()
-        self.session.headers.update({
-            'X-API-Key': self.api_key,
-            'Content-Type': 'application/json',
-            'Accept': 'application/json'
-        })
+        self.ssh_hostname = ssh_hostname
+        self.ssh_username = ssh_username
+        self.ssh_key_path = ssh_key_path
         
-    def _make_request(self, method: str, endpoint: str, data: Optional[Dict] = None) -> requests.Response:
-        """Make API request to PowerDNS"""
-        url = urljoin(self.server_url, f"/api/v1/{endpoint}")
+        # If SSH hostname is provided, we'll use SSH for API calls
+        self.use_ssh = bool(ssh_hostname)
+        
+        if not self.use_ssh:
+            # Direct API access (original behavior)
+            self.session = requests.Session()
+            self.session.headers.update({
+                'X-API-Key': self.api_key,
+                'Content-Type': 'application/json',
+                'Accept': 'application/json'
+            })
+        
+    def _execute_ssh_command(self, command: str) -> Tuple[bool, str, str]:
+        """Execute command via SSH"""
+        if not self.ssh_hostname:
+            return False, "", "SSH hostname not configured"
+            
+        ssh_cmd = ["ssh"]
+        
+        # Add SSH key if provided
+        if self.ssh_key_path:
+            ssh_cmd.extend(["-i", self.ssh_key_path])
+            
+        # Add SSH options
+        ssh_cmd.extend([
+            "-o", "StrictHostKeyChecking=no",
+            "-o", "UserKnownHostsFile=/dev/null",
+            "-o", "ConnectTimeout=10"
+        ])
+        
+        ssh_cmd.extend([f"{self.ssh_username}@{self.ssh_hostname}", command])
         
         try:
-            if method.upper() == 'GET':
-                response = self.session.get(url, params=data)
-            elif method.upper() == 'POST':
-                response = self.session.post(url, json=data)
-            elif method.upper() == 'PUT':
-                response = self.session.put(url, json=data)
-            elif method.upper() == 'PATCH':
-                response = self.session.patch(url, json=data)
-            elif method.upper() == 'DELETE':
-                response = self.session.delete(url)
-            else:
-                raise ValueError(f"Unsupported HTTP method: {method}")
+            result = subprocess.run(
+                ssh_cmd,
+                capture_output=True,
+                text=True,
+                timeout=30
+            )
+            return result.returncode == 0, result.stdout, result.stderr
+        except subprocess.TimeoutExpired:
+            return False, "", "SSH command timed out"
+        except Exception as e:
+            return False, "", f"SSH execution error: {e}"
+    
+    def _make_curl_command(self, method: str, endpoint: str, data: Optional[Dict] = None) -> str:
+        """Create curl command for PowerDNS API via SSH"""
+        url = f"{self.server_url}/api/v1/{endpoint}"
+        
+        # Build curl command as a list first for proper escaping
+        curl_parts = [
+            "curl", "-s", "-X", method.upper(),
+            "-H", f"'X-API-Key: {self.api_key}'",
+            "-H", "'Content-Type: application/json'",
+            "-H", "'Accept: application/json'"
+        ]
+        
+        # Add data for POST/PUT/PATCH requests
+        if data and method.upper() in ['POST', 'PUT', 'PATCH']:
+            json_data = json.dumps(data)
+            curl_parts.extend(["-d", f"'{json_data}'"])
+        
+        # Add the URL at the end, properly quoted
+        curl_parts.append(f"'{url}'")
+        
+        return " ".join(curl_parts)
+    
+    def test_connection(self) -> bool:
+        """
+        Test PowerDNS API connectivity
+        
+        Returns:
+            True if connection successful, False otherwise
+        """
+        try:
+            if self.use_ssh:
+                # Test via SSH curl
+                curl_cmd = self._make_curl_command("GET", "servers")
+                success, stdout, stderr = self._execute_ssh_command(curl_cmd)
                 
-            response.raise_for_status()
-            return response
+                if success and stdout.strip():
+                    try:
+                        response_data = json.loads(stdout)
+                        return isinstance(response_data, list) and len(response_data) > 0
+                    except json.JSONDecodeError:
+                        return False
+                return False
+            else:
+                # Direct API test
+                response = self.session.get(f"{self.server_url}/api/v1/servers")
+                return response.status_code == 200
+        except Exception:
+            return False
+        
+    def _make_request(self, method: str, endpoint: str, data: Optional[Dict] = None) -> requests.Response:
+        """Make API request to PowerDNS (via SSH if configured)"""
+        if self.use_ssh:
+            # Use SSH to execute curl command
+            curl_command = self._make_curl_command(method, endpoint, data)
+            success, stdout, stderr = self._execute_ssh_command(curl_command)
             
-        except requests.exceptions.RequestException as e:
-            print(f"PowerDNS API request failed: {e}")
-            if hasattr(e, 'response') and e.response is not None:
-                print(f"Response status: {e.response.status_code}")
-                print(f"Response body: {e.response.text}")
-            raise
+            if not success:
+                raise requests.exceptions.RequestException(f"SSH curl command failed: {stderr}")
+            
+            # Create a mock response object
+            class MockResponse:
+                def __init__(self, text: str):
+                    self.text = text
+                    self.status_code = 200 if text.strip() and not text.startswith('curl:') else 500
+                    
+                def json(self):
+                    if self.text.strip():
+                        try:
+                            return json.loads(self.text)
+                        except json.JSONDecodeError:
+                            return {}
+                    return {}
+                    
+                def raise_for_status(self):
+                    if self.status_code >= 400:
+                        raise requests.exceptions.RequestException(f"API request failed: {self.text}")
+            
+            return MockResponse(stdout)
+        else:
+            # Direct API access (original behavior)
+            url = urljoin(self.server_url, f"/api/v1/{endpoint}")
+            
+            try:
+                if method.upper() == 'GET':
+                    response = self.session.get(url, params=data)
+                elif method.upper() == 'POST':
+                    response = self.session.post(url, json=data)
+                elif method.upper() == 'PUT':
+                    response = self.session.put(url, json=data)
+                elif method.upper() == 'PATCH':
+                    response = self.session.patch(url, json=data)
+                elif method.upper() == 'DELETE':
+                    response = self.session.delete(url)
+                else:
+                    raise ValueError(f"Unsupported HTTP method: {method}")
+                    
+                response.raise_for_status()
+                return response
+                
+            except requests.exceptions.RequestException as e:
+                print(f"PowerDNS API request failed: {e}")
+                if hasattr(e, 'response') and e.response is not None:
+                    print(f"Response status: {e.response.status_code}")
+                    print(f"Response body: {e.response.text}")
+                raise
     
     def get_servers(self) -> List[Dict]:
         """Get list of PowerDNS servers"""
@@ -203,7 +327,7 @@ class PowerDNSManager:
             record_name=dkim_record_info['name'],
             record_type=dkim_record_info['type'],
             content=dkim_record_info['content'],
-            ttl=dkim_record_info.get('ttl', 300),
+            ttl=dkim_record_info.get('ttl', 3600),
             server_id=server_id
         )
 
